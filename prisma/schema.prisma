@@ -1,0 +1,171 @@
+// Prisma Schema for Nbbang Backend
+// Python의 database_model.py를 기반으로 작성
+// PostgreSQL (Supabase) 사용
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// User Model
+// Python: UserModel
+// 주의: Supabase Auth를 사용하므로, 이 테이블은 비즈니스 로직에 필요한 추가 정보만 저장
+model User {
+  id             Int      @id @default(autoincrement())
+  name           String?
+  platform       String? // "kakao", "naver", "google", null
+  platformId     String?  @map("platform_id")
+  accountNumber  Bytes?   @map("account_number") // 암호화된 계좌번호 (LargeBinary)
+  bank           Bytes? // 암호화된 은행명 (LargeBinary)
+  kakaoDepositId String?  @map("kakao_deposit_id")
+  identifier     String? // 일반 로그인용 이메일/아이디
+  password       String? // bcrypt 해시된 비밀번호
+  type           String?  @default("user") // "user" 또는 "guest"
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  meetings Meeting[]
+
+  @@index([identifier])
+  @@index([platform, platformId])
+  @@map("user")
+}
+
+// Meeting Model
+// Python: MeetingModel
+model Meeting {
+  id                Int     @id @default(autoincrement())
+  name              String
+  date              String
+  userId            Int     @map("user_id")
+  uuid              String  @unique
+  accountNumber     Bytes?  @map("account_number") // 암호화된 계좌번호
+  bank              Bytes? // 암호화된 은행명
+  kakaoDepositId    String? @map("kakao_deposit_id")
+  isSimple          Boolean @default(false) @map("is_simple")
+  simplePrice       Int?    @map("simple_price")
+  simpleMemberCount Int?    @map("simple_member_count")
+  images            Json? // 이미지 URL 배열
+
+  // 해외여행 정산 모드 필드
+  isTrip           Boolean @default(false) @map("is_trip")
+  countryCode      String? @map("country_code") // ISO 3166-1 alpha-2 (예: "JP", "US")
+  targetCurrency   String? @default("KRW") @map("target_currency") // ISO 4217 (예: "JPY", "USD", 기본값: "KRW")
+  baseExchangeRate Float?  @default(1.0) @map("base_exchange_rate") // 기준 환율 (원화 대비)
+  initialGonggeum  Float?  @default(0) @map("initial_gonggeum") // 초기 공금 총액 (원화 환산)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  user          User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  members       Member[]
+  payments      Payment[]
+  contributions Contribution[]
+
+  @@index([userId])
+  @@index([uuid])
+}
+
+// 주의: 실제 테이블명은 SERVICE_ENV 환경 변수에 따라 prefix가 붙습니다
+
+// Member Model
+// Python: MemberModel
+model Member {
+  id            Int     @id @default(autoincrement())
+  name          String
+  leader        Boolean @default(false)
+  meetingId     Int     @map("meeting_id")
+  userId        String? @map("user_id") // Optional - 비회원 친구 지원
+  accountNumber Bytes?  @map("account_number") // 암호화된 계좌번호
+
+  // Relations
+  meeting      Meeting       @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  contributions Contribution[]
+
+  @@index([meetingId])
+}
+
+// Contribution Model
+// 멤버별 초기 공금(KRW) 저장
+model Contribution {
+  id        Int     @id @default(autoincrement())
+  memberId  Int     @map("member_id")
+  amountKRW Float   @map("amount_krw") // 멤버가 낸 초기 공금 (원화)
+  meetingId Int     @map("meeting_id")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  member  Member  @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  meeting Meeting @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+
+  @@index([memberId])
+  @@index([meetingId])
+  @@unique([memberId, meetingId]) // 한 멤버당 한 모임에 하나의 기여만
+  @@map("Contribution") // 실제 테이블명
+}
+
+// 주의: 실제 테이블명은 SERVICE_ENV 환경 변수에 따라 prefix가 붙습니다
+
+// Payment Model
+// Python: PaymentModel
+// 개선: attend_member_ids를 String에서 Int[] 배열로 변경
+model Payment {
+  id              Int    @id @default(autoincrement())
+  name            String // 지출 내역명 (기존 place 필드와 동일하지만 더 명확한 네이밍)
+  place           String // 장소 (하위 호환성을 위해 유지)
+  price           Int // 최종 원화 환산 금액
+  originalPrice   Float? @map("original_price") // 현지 통화 금액 (외화인 경우)
+  currency        String @default("KRW") // ISO 4217 통화 코드 (기본값: "KRW")
+  exchangeRate    Float? @map("exchange_rate") // 적용된 환율
+  payerId         Int?   @map("payer_id") // Nullable: null이면 '공금'으로 결제한 것으로 처리
+  payMemberId     Int    @map("pay_member_id") // 하위 호환성을 위해 유지 (기존 로직)
+  attendMemberIds Int[]  @map("attend_member_ids") // PostgreSQL 배열 타입으로 개선
+  type            String @default("PUBLIC") @map("type") // 'PUBLIC' (공금) 또는 'INDIVIDUAL' (개인)
+  meetingId       Int    @map("meeting_id")
+  orderNo         Int?   @map("order_no")
+
+  // Relations
+  meeting Meeting @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+
+  @@index([meetingId])
+  @@index([payerId])
+}
+
+// DailyExchangeRate Model
+// 일일 환율 캐싱 테이블
+model DailyExchangeRate {
+  id        Int      @id @default(autoincrement())
+  date      String   // YYYY-MM-DD 형식
+  currency  String   // ISO 4217 통화 코드 (USD, JPY 등)
+  rate      Float    // KRW 기준 환율 (예: 1 USD = 1400 KRW)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@unique([date, currency])
+  @@index([date])
+  @@index([currency])
+  @@map("DailyExchangeRate")
+}
+
+// Country Model
+// 국가 정보 테이블
+model Country {
+  code     String @id // ISO 3166-1 alpha-2 (예: "KR", "JP", "US")
+  name     String // 국가명 (한글)
+  currency String // ISO 4217 통화 코드
+  symbol   String? // 통화 기호 (예: "$", "¥")
+  flag     String? // 국기 이모지 또는 이미지 URL
+  order    Int     // 정렬 순서 (0부터 시작, KR은 0)
+
+  @@index([order])
+  @@map("Country")
+}
+
+// 주의: 실제 테이블명은 SERVICE_ENV 환경 변수에 따라 prefix가 붙습니다
+
